@@ -469,15 +469,16 @@ module.exports = layout;
 
 function layout(g, opts) {
   var time = opts && opts.debugTiming ? util.time : util.notime;
+  var cg = g.graph().constraintGraph;
   time("layout", function() {
     var layoutGraph = time("  buildLayoutGraph",
                                function() { return buildLayoutGraph(g); });
-    time("  runLayout",        function() { runLayout(layoutGraph, time); });
+    time("  runLayout",        function() { runLayout(layoutGraph, cg, time); });
     time("  updateInputGraph", function() { updateInputGraph(g, layoutGraph); });
   });
 }
 
-function runLayout(g, time) {
+function runLayout(g, cg, time) {
   time("    makeSpaceForEdgeLabels", function() { makeSpaceForEdgeLabels(g); });
   time("    removeSelfEdges",        function() { removeSelfEdges(g); });
   time("    acyclic",                function() { acyclic.run(g); });
@@ -492,7 +493,7 @@ function runLayout(g, time) {
   time("    normalize.run",          function() { normalize.run(g); });
   time("    parentDummyChains",      function() { parentDummyChains(g); });
   time("    addBorderSegments",      function() { addBorderSegments(g); });
-  time("    order",                  function() { order(g); });
+  time("    order",                  function() { order(g, cg); });
   time("    insertSelfEdges",        function() { insertSelfEdges(g); });
   time("    adjustCoordinateSystem", function() { coordinateSystem.adjust(g); });
   time("    position",               function() { position(g); });
@@ -1345,7 +1346,7 @@ module.exports = order;
  *    1. Graph nodes will have an "order" attribute based on the results of the
  *       algorithm.
  */
-function order(g) {
+function order(g, cg) {
   var maxRank = util.maxRank(g),
       downLayerGraphs = buildLayerGraphs(g, _.range(1, maxRank + 1), "inEdges"),
       upLayerGraphs = buildLayerGraphs(g, _.range(maxRank - 1, -1, -1), "outEdges");
@@ -1357,7 +1358,7 @@ function order(g) {
       best;
 
   for (var i = 0, lastBest = 0; lastBest < 4; ++i, ++lastBest) {
-    sweepLayerGraphs(i % 2 ? downLayerGraphs : upLayerGraphs, i % 4 >= 2);
+    sweepLayerGraphs(i % 2 ? downLayerGraphs : upLayerGraphs, cg, i % 4 >= 2);
 
     layering = util.buildLayerMatrix(g);
     var cc = crossCount(g, layering);
@@ -1377,8 +1378,8 @@ function buildLayerGraphs(g, ranks, relationship) {
   });
 }
 
-function sweepLayerGraphs(layerGraphs, biasRight) {
-  var cg = new Graph();
+function sweepLayerGraphs(layerGraphs, _cg, biasRight) {
+  var cg = _cg || new Graph();
   _.each(layerGraphs, function(lg) {
     var root = lg.graph().root;
     var sorted = sortSubgraph(lg, root, cg, biasRight);
@@ -2898,7 +2899,7 @@ function notime(name, fn) {
 }
 
 },{"./graphlib":7,"./lodash":10}],30:[function(require,module,exports){
-module.exports = "0.7.4";
+module.exports = "0.7.5-pre";
 
 },{}],31:[function(require,module,exports){
 /**
@@ -3758,6 +3759,50 @@ Graph.prototype.neighbors = function(v) {
   }
 };
 
+Graph.prototype.filterNodes = function(filter) {
+  var copy = new this.constructor({
+    directed: this._isDirected,
+    multigraph: this._isMultigraph,
+    compound: this._isCompound
+  });
+
+  copy.setGraph(this.graph());
+
+  _.each(this._nodes, function(value, v) {
+    if (filter(v)) {
+      copy.setNode(v, value);
+    }
+  }, this);
+
+  _.each(this._edgeObjs, function(e) {
+    if (copy.hasNode(e.v) && copy.hasNode(e.w)) {
+      copy.setEdge(e, this.edge(e));
+    }
+  }, this);
+
+  var self = this;
+  var parents = {};
+  function findParent(v) {
+    var parent = self.parent(v);
+    if (parent === undefined || copy.hasNode(parent)) {
+      parents[v] = parent;
+      return parent;
+    } else if (parent in parents) {
+      return parents[parent];
+    } else {
+      return findParent(parent);
+    }
+  }
+
+  if (this._isCompound) {
+    _.each(copy.nodes(), function(v) {
+      copy.setParent(v, findParent(v));
+    });
+  }
+
+  return copy;
+};
+
 /* === Edge functions ========== */
 
 Graph.prototype.setDefaultEdgeLabel = function(newDefault) {
@@ -3796,18 +3841,19 @@ Graph.prototype.setPath = function(vs, value) {
  */
 Graph.prototype.setEdge = function() {
   var v, w, name, value,
-      valueSpecified = false;
+      valueSpecified = false,
+      arg0 = arguments[0];
 
-  if (_.isPlainObject(arguments[0])) {
-    v = arguments[0].v;
-    w = arguments[0].w;
-    name = arguments[0].name;
+  if (typeof arg0 === "object" && arg0 !== null && "v" in arg0) {
+    v = arg0.v;
+    w = arg0.w;
+    name = arg0.name;
     if (arguments.length === 2) {
       value = arguments[1];
       valueSpecified = true;
     }
   } else {
-    v = arguments[0];
+    v = arg0;
     w = arguments[1];
     name = arguments[3];
     if (arguments.length > 2) {
@@ -3919,7 +3965,7 @@ Graph.prototype.nodeEdges = function(v, w) {
 };
 
 function incrementOrInitEntry(map, k) {
-  if (_.has(map, k)) {
+  if (map[k]) {
     map[k]++;
   } else {
     map[k] = 1;
@@ -3930,7 +3976,9 @@ function decrementOrRemoveEntry(map, k) {
   if (!--map[k]) { delete map[k]; }
 }
 
-function edgeArgsToId(isDirected, v, w, name) {
+function edgeArgsToId(isDirected, v_, w_, name) {
+  var v = "" + v_;
+  var w = "" + w_;
   if (!isDirected && v > w) {
     var tmp = v;
     v = w;
@@ -3940,7 +3988,9 @@ function edgeArgsToId(isDirected, v, w, name) {
              (_.isUndefined(name) ? DEFAULT_EDGE_NAME : name);
 }
 
-function edgeArgsToObj(isDirected, v, w, name) {
+function edgeArgsToObj(isDirected, v_, w_, name) {
+  var v = "" + v_;
+  var w = "" + w_;
   if (!isDirected && v > w) {
     var tmp = v;
     v = w;
@@ -4034,14 +4084,14 @@ function read(json) {
 
 },{"./graph":46,"./lodash":49}],49:[function(require,module,exports){
 module.exports=require(10)
-},{"/Users/cpettitt/projects/dagre/lib/lodash.js":10,"lodash":51}],50:[function(require,module,exports){
-module.exports = '1.0.5';
+},{"/Users/aleung/proj/forks/dagre/lib/lodash.js":10,"lodash":51}],50:[function(require,module,exports){
+module.exports = '1.0.7';
 
 },{}],51:[function(require,module,exports){
 (function (global){
 /**
  * @license
- * lodash 3.10.0 (Custom Build) <https://lodash.com/>
+ * lodash 3.10.1 (Custom Build) <https://lodash.com/>
  * Build: `lodash modern -d -o ./index.js`
  * Copyright 2012-2015 The Dojo Foundation <http://dojofoundation.org/>
  * Based on Underscore.js 1.8.3 <http://underscorejs.org/LICENSE>
@@ -4054,7 +4104,7 @@ module.exports = '1.0.5';
   var undefined;
 
   /** Used as the semantic version number. */
-  var VERSION = '3.10.0';
+  var VERSION = '3.10.1';
 
   /** Used to compose bitmasks for wrapper metadata. */
   var BIND_FLAG = 1,

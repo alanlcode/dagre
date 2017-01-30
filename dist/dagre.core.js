@@ -469,15 +469,16 @@ module.exports = layout;
 
 function layout(g, opts) {
   var time = opts && opts.debugTiming ? util.time : util.notime;
+  var cg = g.graph().constraintGraph;
   time("layout", function() {
     var layoutGraph = time("  buildLayoutGraph",
                                function() { return buildLayoutGraph(g); });
-    time("  runLayout",        function() { runLayout(layoutGraph, time); });
+    time("  runLayout",        function() { runLayout(layoutGraph, cg, time); });
     time("  updateInputGraph", function() { updateInputGraph(g, layoutGraph); });
   });
 }
 
-function runLayout(g, time) {
+function runLayout(g, cg, time) {
   time("    makeSpaceForEdgeLabels", function() { makeSpaceForEdgeLabels(g); });
   time("    removeSelfEdges",        function() { removeSelfEdges(g); });
   time("    acyclic",                function() { acyclic.run(g); });
@@ -492,7 +493,7 @@ function runLayout(g, time) {
   time("    normalize.run",          function() { normalize.run(g); });
   time("    parentDummyChains",      function() { parentDummyChains(g); });
   time("    addBorderSegments",      function() { addBorderSegments(g); });
-  time("    order",                  function() { order(g); });
+  time("    order",                  function() { order(g, cg); });
   time("    insertSelfEdges",        function() { insertSelfEdges(g); });
   time("    adjustCoordinateSystem", function() { coordinateSystem.adjust(g); });
   time("    position",               function() { position(g); });
@@ -1345,7 +1346,7 @@ module.exports = order;
  *    1. Graph nodes will have an "order" attribute based on the results of the
  *       algorithm.
  */
-function order(g) {
+function order(g, cg) {
   var maxRank = util.maxRank(g),
       downLayerGraphs = buildLayerGraphs(g, _.range(1, maxRank + 1), "inEdges"),
       upLayerGraphs = buildLayerGraphs(g, _.range(maxRank - 1, -1, -1), "outEdges");
@@ -1357,7 +1358,7 @@ function order(g) {
       best;
 
   for (var i = 0, lastBest = 0; lastBest < 4; ++i, ++lastBest) {
-    sweepLayerGraphs(i % 2 ? downLayerGraphs : upLayerGraphs, i % 4 >= 2);
+    sweepLayerGraphs(i % 2 ? downLayerGraphs : upLayerGraphs, cg, i % 4 >= 2);
 
     layering = util.buildLayerMatrix(g);
     var cc = crossCount(g, layering);
@@ -1377,8 +1378,8 @@ function buildLayerGraphs(g, ranks, relationship) {
   });
 }
 
-function sweepLayerGraphs(layerGraphs, biasRight) {
-  var cg = new Graph();
+function sweepLayerGraphs(layerGraphs, _cg, biasRight) {
+  var cg = _cg || new Graph();
   _.each(layerGraphs, function(lg) {
     var root = lg.graph().root;
     var sorted = sortSubgraph(lg, root, cg, biasRight);
@@ -2898,7 +2899,7 @@ function notime(name, fn) {
 }
 
 },{"./graphlib":7,"./lodash":10}],30:[function(require,module,exports){
-module.exports = "0.7.4";
+module.exports = "0.7.5-pre";
 
 },{}]},{},[1])(1)
 });
